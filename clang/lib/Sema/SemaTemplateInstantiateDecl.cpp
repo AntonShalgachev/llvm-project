@@ -5412,6 +5412,14 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
   if (TSK == TSK_ExplicitSpecialization)
     return;
 
+  llvm::TimeTraceScope TimeScope("InstantiateVariable", [&]() {
+    std::string Name;
+    llvm::raw_string_ostream OS(Name);
+    Var->getNameForDiagnostic(OS, getPrintingPolicy(),
+                                   /*Qualified=*/true);
+    return Name;
+  });
+
   // Find the pattern and the arguments to substitute into it.
   VarDecl *PatternDecl = Var->getTemplateInstantiationPattern();
   assert(PatternDecl && "no pattern for templated variable");
