@@ -667,9 +667,9 @@ namespace {
   // {"name":"EvaluateAsRValue","args":{"detail":"<test.cc:8:21, col:25>"}}}
   class ExprTimeTraceScope {
   public:
-    ExprTimeTraceScope(const Expr *E, const ASTContext &Ctx, StringRef Name)
-        : TimeScope(Name, [E, &Ctx] {
-            return E->getSourceRange().printToString(Ctx.getSourceManager());
+    ExprTimeTraceScope(const Stmt *S, const ASTContext &Ctx, StringRef Name)
+        : TimeScope(Name, [S, &Ctx] {
+            return S->getSourceRange().printToString(Ctx.getSourceManager());
           }) {}
 
   private:
@@ -4914,6 +4914,7 @@ static bool EvaluateCond(EvalInfo &Info, const VarDecl *CondDecl,
                          const Expr *Cond, bool &Result) {
   if (Cond->isValueDependent())
     return false;
+  ExprTimeTraceScope TimeScope(Cond, Info.Ctx, "EvaluateCond");
   FullExpressionRAII Scope(Info);
   if (CondDecl && !EvaluateDecl(Info, CondDecl))
     return false;
@@ -4955,6 +4956,8 @@ static EvalStmtResult EvaluateLoopBody(StmtResult &Result, EvalInfo &Info,
                                        const Stmt *Body,
                                        const SwitchCase *Case = nullptr) {
   BlockScopeRAII Scope(Info);
+
+  ExprTimeTraceScope TimeScope(Body, Info.Ctx, "EvaluateLoopBody");
 
   EvalStmtResult ESR = EvaluateStmt(Result, Info, Body, Case);
   if (ESR != ESR_Failed && ESR != ESR_CaseNotFound && !Scope.destroy())
@@ -5071,6 +5074,8 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
                                    const Stmt *S, const SwitchCase *Case) {
   if (!Info.nextStep(S))
     return ESR_Failed;
+
+  ExprTimeTraceScope TimeScope(S, Info.Ctx, std::string("EvaluateStmt (") + S->getStmtClassName() + ")");
 
   // If we're hunting down a 'case' or 'default' label, recurse through
   // substatements until we hit the label.
@@ -10281,6 +10286,7 @@ static bool EvaluateRecord(const Expr *E, const LValue &This,
   assert(!E->isValueDependent());
   assert(E->isPRValue() && E->getType()->isRecordType() &&
          "can't evaluate expression as a record rvalue");
+  ExprTimeTraceScope TimeScope(E, Info.Ctx, "EvaluateRecord");
   return RecordExprEvaluator(Info, This, Result).Visit(E);
 }
 
@@ -10718,6 +10724,7 @@ static bool EvaluateArray(const Expr *E, const LValue &This,
   assert(!E->isValueDependent());
   assert(E->isPRValue() && E->getType()->isArrayType() &&
          "not an array prvalue");
+  ExprTimeTraceScope TimeScope(E, Info.Ctx, "EvaluateArray");
   return ArrayExprEvaluator(Info, This, Result).Visit(E);
 }
 
@@ -14852,6 +14859,7 @@ static bool EvaluateAtomic(const Expr *E, const LValue *This, APValue &Result,
                            EvalInfo &Info) {
   assert(!E->isValueDependent());
   assert(E->isPRValue() && E->getType()->isAtomicType());
+  ExprTimeTraceScope TimeScope(E, Info.Ctx, "EvaluateAtomic");
   return AtomicExprEvaluator(Info, This, Result).Visit(E);
 }
 
