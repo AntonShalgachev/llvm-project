@@ -141,6 +141,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include "llvm/Support/TimeProfiler.h"
 
 using namespace clang;
 using namespace clang::serialization;
@@ -8523,9 +8524,12 @@ void ASTReader::ReadLateParsedTemplates(
         &LPTMap) {
   for (auto &LPT : LateParsedTemplates) {
     ModuleFile *FMod = LPT.first;
+    llvm::TimeTraceScope TimeScope("ReadLateParsedTemplates", FMod->FileName);
     RecordDataImpl &LateParsed = LPT.second;
     for (unsigned Idx = 0, N = LateParsed.size(); Idx < N;
          /* In loop */) {
+      llvm::TimeTraceScope TimeScope("ReadLateParsedTemplate");
+
       FunctionDecl *FD =
           cast<FunctionDecl>(GetLocalDecl(*FMod, LateParsed[Idx++]));
 
