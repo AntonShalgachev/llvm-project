@@ -68,6 +68,7 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include "llvm/Support/TimeProfiler.h"
 
 using namespace clang;
 using namespace serialization;
@@ -890,6 +891,15 @@ void ASTDeclReader::VisitDeclaratorDecl(DeclaratorDecl *DD) {
 }
 
 void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
+    llvm::TimeTraceScope TimeScope("Visit declaration", [&]()
+    {
+        std::string Name;
+    llvm::raw_string_ostream OS(Name);
+    FD->getNameForDiagnostic(OS, Reader.getContext().getPrintingPolicy(),
+                             /*Qualified=*/true);
+    return Name;
+    });
+
   RedeclarableResult Redecl = VisitRedeclarable(FD);
 
   FunctionDecl *Existing = nullptr;
