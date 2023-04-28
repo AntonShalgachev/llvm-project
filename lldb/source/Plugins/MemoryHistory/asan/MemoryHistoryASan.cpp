@@ -67,8 +67,11 @@ const char *memory_history_asan_command_prefix = R"(
         size_t __asan_get_alloc_stack(void *addr, void **trace, size_t size, int *thread_id);
         size_t __asan_get_free_stack(void *addr, void **trace, size_t size, int *thread_id);
     }
+)";
 
-    struct data {
+const char *memory_history_asan_command_format =
+    R"(
+    struct {
         void *alloc_trace[256];
         size_t alloc_count;
         int alloc_tid;
@@ -76,12 +79,7 @@ const char *memory_history_asan_command_prefix = R"(
         void *free_trace[256];
         size_t free_count;
         int free_tid;
-    };
-)";
-
-const char *memory_history_asan_command_format =
-    R"(
-    data t;
+    } t;
 
     t.alloc_count = __asan_get_alloc_stack((void *)0x%)" PRIx64
     R"(, t.alloc_trace, 256, &t.alloc_tid);
@@ -101,8 +99,9 @@ static void CreateHistoryThreadFromValueObject(ProcessSP process_sp,
   std::string trace_path = "." + std::string(type) + "_trace";
 
   ValueObjectSP count_sp =
-      return_value_sp->GetValueForExpressionPath(count_path);
-  ValueObjectSP tid_sp = return_value_sp->GetValueForExpressionPath(tid_path);
+      return_value_sp->GetValueForExpressionPath(count_path.c_str());
+  ValueObjectSP tid_sp =
+      return_value_sp->GetValueForExpressionPath(tid_path.c_str());
 
   if (!count_sp || !tid_sp)
     return;
@@ -114,7 +113,7 @@ static void CreateHistoryThreadFromValueObject(ProcessSP process_sp,
     return;
 
   ValueObjectSP trace_sp =
-      return_value_sp->GetValueForExpressionPath(trace_path);
+      return_value_sp->GetValueForExpressionPath(trace_path.c_str());
 
   if (!trace_sp)
     return;
@@ -155,7 +154,8 @@ HistoryThreads MemoryHistoryASan::GetHistoryThreads(lldb::addr_t address) {
   if (!thread_sp)
     return result;
 
-  StackFrameSP frame_sp = thread_sp->GetSelectedFrame();
+  StackFrameSP frame_sp =
+      thread_sp->GetSelectedFrame(DoNoSelectMostRelevantFrame);
   if (!frame_sp)
     return result;
 

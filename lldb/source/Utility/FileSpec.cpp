@@ -13,14 +13,15 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
+#include <optional>
 #include <system_error>
 #include <vector>
 
@@ -304,7 +305,8 @@ bool FileSpec::Match(const FileSpec &pattern, const FileSpec &file) {
   return true;
 }
 
-llvm::Optional<FileSpec::Style> FileSpec::GuessPathStyle(llvm::StringRef absolute_path) {
+std::optional<FileSpec::Style>
+FileSpec::GuessPathStyle(llvm::StringRef absolute_path) {
   if (absolute_path.startswith("/"))
     return Style::posix;
   if (absolute_path.startswith(R"(\\)"))
@@ -397,9 +399,8 @@ void FileSpec::GetPath(llvm::SmallVectorImpl<char> &path,
     Denormalize(path, m_style);
 }
 
-ConstString FileSpec::GetFileNameExtension() const {
-  return ConstString(
-      llvm::sys::path::extension(m_filename.GetStringRef(), m_style));
+llvm::StringRef FileSpec::GetFileNameExtension() const {
+  return llvm::sys::path::extension(m_filename.GetStringRef(), m_style);
 }
 
 ConstString FileSpec::GetFileNameStrippingExtension() const {
@@ -476,8 +477,8 @@ bool FileSpec::RemoveLastPathComponent() {
 ///     \b true if the filespec represents an implementation source
 ///     file, \b false otherwise.
 bool FileSpec::IsSourceImplementationFile() const {
-  ConstString extension(GetFileNameExtension());
-  if (!extension)
+  llvm::StringRef extension = GetFileNameExtension();
+  if (extension.empty())
     return false;
 
   static RegularExpression g_source_file_regex(llvm::StringRef(
@@ -485,7 +486,7 @@ bool FileSpec::IsSourceImplementationFile() const {
       "cC][pP]|[sS]|[aA][sS][mM]|[fF]|[fF]77|[fF]90|[fF]95|[fF]03|[fF][oO]["
       "rR]|[fF][tT][nN]|[fF][pP][pP]|[aA][dD][aA]|[aA][dD][bB]|[aA][dD][sS])"
       "$"));
-  return g_source_file_regex.Execute(extension.GetStringRef());
+  return g_source_file_regex.Execute(extension);
 }
 
 bool FileSpec::IsRelative() const {

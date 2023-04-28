@@ -44,7 +44,6 @@
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadList.h"
 #include "lldb/Utility/AnsiTerminal.h"
-#include "lldb/Utility/Diagnostics.h"
 #include "lldb/Utility/Event.h"
 #include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Listener.h"
@@ -75,6 +74,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -559,6 +559,12 @@ void Debugger::Terminate() {
   assert(g_debugger_list_ptr &&
          "Debugger::Terminate called without a matching Debugger::Initialize!");
 
+  if (g_debugger_list_ptr && g_debugger_list_mutex_ptr) {
+    std::lock_guard<std::recursive_mutex> guard(*g_debugger_list_mutex_ptr);
+    for (const auto &debugger : *g_debugger_list_ptr)
+      debugger->HandleDestroyCallback();
+  }
+
   if (g_thread_pool) {
     // The destructor will wait for all the threads to complete.
     delete g_thread_pool;
@@ -601,8 +607,8 @@ LoadPluginCallback(void *baton, llvm::sys::fs::file_type ft,
                    llvm::StringRef path) {
   Status error;
 
-  static ConstString g_dylibext(".dylib");
-  static ConstString g_solibext(".so");
+  static constexpr llvm::StringLiteral g_dylibext(".dylib");
+  static constexpr llvm::StringLiteral g_solibext(".so");
 
   if (!baton)
     return FileSystem::eEnumerateDirectoryResultQuit;
@@ -678,10 +684,18 @@ DebuggerSP Debugger::CreateInstance(lldb::LogOutputCallback log_callback,
   return debugger_sp;
 }
 
+void Debugger::HandleDestroyCallback() {
+  if (m_destroy_callback) {
+    m_destroy_callback(GetID(), m_destroy_callback_baton);
+    m_destroy_callback = nullptr;
+  }
+}
+
 void Debugger::Destroy(DebuggerSP &debugger_sp) {
   if (!debugger_sp)
     return;
 
+  debugger_sp->HandleDestroyCallback();
   CommandInterpreter &cmd_interpreter = debugger_sp->GetCommandInterpreter();
 
   if (cmd_interpreter.GetSaveSessionOnQuit()) {
@@ -798,20 +812,19 @@ Debugger::Debugger(lldb::LogOutputCallback log_callback, void *baton)
 
   m_collection_sp->Initialize(g_debugger_properties);
   m_collection_sp->AppendProperty(
-      ConstString("target"),
-      ConstString("Settings specify to debugging targets."), true,
+      ConstString("target"), "Settings specify to debugging targets.", true,
       Target::GetGlobalProperties().GetValueProperties());
   m_collection_sp->AppendProperty(
-      ConstString("platform"), ConstString("Platform settings."), true,
+      ConstString("platform"), "Platform settings.", true,
       Platform::GetGlobalPlatformProperties().GetValueProperties());
   m_collection_sp->AppendProperty(
-      ConstString("symbols"), ConstString("Symbol lookup and cache settings."),
-      true, ModuleList::GetGlobalModuleListProperties().GetValueProperties());
+      ConstString("symbols"), "Symbol lookup and cache settings.", true,
+      ModuleList::GetGlobalModuleListProperties().GetValueProperties());
   if (m_command_interpreter_up) {
     m_collection_sp->AppendProperty(
         ConstString("interpreter"),
-        ConstString("Settings specify to the debugger's command interpreter."),
-        true, m_command_interpreter_up->GetValueProperties());
+        "Settings specify to the debugger's command interpreter.", true,
+        m_command_interpreter_up->GetValueProperties());
   }
   OptionValueSInt64 *term_width =
       m_collection_sp->GetPropertyAtIndexAsOptionValueSInt64(
@@ -826,6 +839,22 @@ Debugger::Debugger(lldb::LogOutputCallback log_callback, void *baton)
   // Turn off use-color if we don't write to a terminal with color support.
   if (!GetOutputFile().GetIsTerminalWithColors())
     SetUseColor(false);
+
+  if (Diagnostics::Enabled()) {
+    m_diagnostics_callback_id = Diagnostics::Instance().AddCallback(
+        [this](const FileSpec &dir) -> llvm::Error {
+          for (auto &entry : m_stream_handlers) {
+            llvm::StringRef log_path = entry.first();
+            llvm::StringRef file_name = llvm::sys::path::filename(log_path);
+            FileSpec destination = dir.CopyByAppendingPathComponent(file_name);
+            std::error_code ec =
+                llvm::sys::fs::copy_file(log_path, destination.GetPath());
+            if (ec)
+              return llvm::errorCodeToError(ec);
+          }
+          return llvm::Error::success();
+        });
+  }
 
 #if defined(_WIN32) && defined(ENABLE_VIRTUAL_TERMINAL_PROCESSING)
   // Enabling use of ANSI color codes because LLDB is using them to highlight
@@ -865,6 +894,9 @@ void Debugger::Clear() {
     GetInputFile().Close();
 
     m_command_interpreter_up->Clear();
+
+    if (Diagnostics::Enabled())
+      Diagnostics::Instance().RemoveCallback(m_diagnostics_callback_id);
   });
 }
 
@@ -1197,6 +1229,29 @@ StreamSP Debugger::GetAsyncErrorStream() {
   return std::make_shared<StreamAsynchronousIO>(*this, false, GetUseColor());
 }
 
+void Debugger::RequestInterrupt() {
+  std::lock_guard<std::mutex> guard(m_interrupt_mutex);
+  m_interrupt_requested++;
+}
+
+void Debugger::CancelInterruptRequest() {
+  std::lock_guard<std::mutex> guard(m_interrupt_mutex);
+  if (m_interrupt_requested > 0)
+    m_interrupt_requested--;
+}
+
+bool Debugger::InterruptRequested() {
+  // This is the one we should call internally.  This will return true either
+  // if there's a debugger interrupt and we aren't on the IOHandler thread, 
+  // or if we are on the IOHandler thread and there's a CommandInterpreter
+  // interrupt.
+  if (!IsIOHandlerThreadCurrentThread()) {
+    std::lock_guard<std::mutex> guard(m_interrupt_mutex);
+    return m_interrupt_requested != 0;
+  }
+  return GetCommandInterpreter().WasInterrupted();
+}
+
 size_t Debugger::GetNumDebuggers() {
   if (g_debugger_list_ptr && g_debugger_list_mutex_ptr) {
     std::lock_guard<std::recursive_mutex> guard(*g_debugger_list_mutex_ptr);
@@ -1284,8 +1339,14 @@ void Debugger::SetLoggingCallback(lldb::LogOutputCallback log_callback,
       std::make_shared<CallbackLogHandler>(log_callback, baton);
 }
 
+void Debugger::SetDestroyCallback(
+    lldb_private::DebuggerDestroyCallback destroy_callback, void *baton) {
+  m_destroy_callback = destroy_callback;
+  m_destroy_callback_baton = baton;
+}
+
 static void PrivateReportProgress(Debugger &debugger, uint64_t progress_id,
-                                  const std::string &message,
+                                  std::string title, std::string details,
                                   uint64_t completed, uint64_t total,
                                   bool is_debugger_specific) {
   // Only deliver progress events if we have any progress listeners.
@@ -1293,22 +1354,25 @@ static void PrivateReportProgress(Debugger &debugger, uint64_t progress_id,
   if (!debugger.GetBroadcaster().EventTypeHasListeners(event_type))
     return;
   EventSP event_sp(new Event(
-      event_type, new ProgressEventData(progress_id, message, completed, total,
-                                        is_debugger_specific)));
+      event_type,
+      new ProgressEventData(progress_id, std::move(title), std::move(details),
+                            completed, total, is_debugger_specific)));
   debugger.GetBroadcaster().BroadcastEvent(event_sp);
 }
 
-void Debugger::ReportProgress(uint64_t progress_id, const std::string &message,
-                              uint64_t completed, uint64_t total,
-                              llvm::Optional<lldb::user_id_t> debugger_id) {
+void Debugger::ReportProgress(uint64_t progress_id, std::string title,
+                              std::string details, uint64_t completed,
+                              uint64_t total,
+                              std::optional<lldb::user_id_t> debugger_id) {
   // Check if this progress is for a specific debugger.
   if (debugger_id) {
     // It is debugger specific, grab it and deliver the event if the debugger
     // still exists.
     DebuggerSP debugger_sp = FindDebuggerWithID(*debugger_id);
     if (debugger_sp)
-      PrivateReportProgress(*debugger_sp, progress_id, message, completed,
-                            total, /*is_debugger_specific*/ true);
+      PrivateReportProgress(*debugger_sp, progress_id, std::move(title),
+                            std::move(details), completed, total,
+                            /*is_debugger_specific*/ true);
     return;
   }
   // The progress event is not debugger specific, iterate over all debuggers
@@ -1317,8 +1381,8 @@ void Debugger::ReportProgress(uint64_t progress_id, const std::string &message,
     std::lock_guard<std::recursive_mutex> guard(*g_debugger_list_mutex_ptr);
     DebuggerList::iterator pos, end = g_debugger_list_ptr->end();
     for (pos = g_debugger_list_ptr->begin(); pos != end; ++pos)
-      PrivateReportProgress(*(*pos), progress_id, message, completed, total,
-                            /*is_debugger_specific*/ false);
+      PrivateReportProgress(*(*pos), progress_id, title, details, completed,
+                            total, /*is_debugger_specific*/ false);
   }
 }
 
@@ -1356,7 +1420,7 @@ static void PrivateReportDiagnostic(Debugger &debugger,
 
 void Debugger::ReportDiagnosticImpl(DiagnosticEventData::Type type,
                                     std::string message,
-                                    llvm::Optional<lldb::user_id_t> debugger_id,
+                                    std::optional<lldb::user_id_t> debugger_id,
                                     std::once_flag *once) {
   auto ReportDiagnosticLambda = [&]() {
     // The diagnostic subsystem is optional but we still want to broadcast
@@ -1393,21 +1457,21 @@ void Debugger::ReportDiagnosticImpl(DiagnosticEventData::Type type,
 }
 
 void Debugger::ReportWarning(std::string message,
-                             llvm::Optional<lldb::user_id_t> debugger_id,
+                             std::optional<lldb::user_id_t> debugger_id,
                              std::once_flag *once) {
   ReportDiagnosticImpl(DiagnosticEventData::Type::Warning, std::move(message),
                        debugger_id, once);
 }
 
 void Debugger::ReportError(std::string message,
-                           llvm::Optional<lldb::user_id_t> debugger_id,
+                           std::optional<lldb::user_id_t> debugger_id,
                            std::once_flag *once) {
   ReportDiagnosticImpl(DiagnosticEventData::Type::Error, std::move(message),
                        debugger_id, once);
 }
 
 void Debugger::ReportInfo(std::string message,
-                          llvm::Optional<lldb::user_id_t> debugger_id,
+                          std::optional<lldb::user_id_t> debugger_id,
                           std::once_flag *once) {
   ReportDiagnosticImpl(DiagnosticEventData::Type::Info, std::move(message),
                        debugger_id, once);
@@ -1493,7 +1557,7 @@ bool Debugger::EnableLog(llvm::StringRef channel,
 
 ScriptInterpreter *
 Debugger::GetScriptInterpreter(bool can_create,
-                               llvm::Optional<lldb::ScriptLanguage> language) {
+                               std::optional<lldb::ScriptLanguage> language) {
   std::lock_guard<std::recursive_mutex> locker(m_script_interpreter_mutex);
   lldb::ScriptLanguage script_language =
       language ? *language : GetScriptLanguage();
@@ -1615,6 +1679,7 @@ void Debugger::HandleProcessEvent(const EventSP &event_sp) {
     // Display running state changes first before any STDIO
     if (got_state_changed && !state_is_stopped) {
       Process::HandleProcessStateChangedEvent(event_sp, output_stream_sp.get(),
+                                              DoNoSelectMostRelevantFrame,
                                               pop_process_io_handler);
     }
 
@@ -1654,6 +1719,7 @@ void Debugger::HandleProcessEvent(const EventSP &event_sp) {
     // Now display any stopped state changes after any STDIO
     if (got_state_changed && state_is_stopped) {
       Process::HandleProcessStateChangedEvent(event_sp, output_stream_sp.get(),
+                                              DoNoSelectMostRelevantFrame,
                                               pop_process_io_handler);
     }
 
@@ -1939,7 +2005,15 @@ void Debugger::HandleDiagnosticEvent(const lldb::EventSP &event_sp) {
   data->Dump(stream.get());
 }
 
-bool Debugger::HasIOHandlerThread() { return m_io_handler_thread.IsJoinable(); }
+bool Debugger::HasIOHandlerThread() const {
+  return m_io_handler_thread.IsJoinable(); 
+}
+
+HostThread Debugger::SetIOHandlerThread(HostThread &new_thread) {
+  HostThread old_host = m_io_handler_thread;
+  m_io_handler_thread = new_thread;
+  return old_host;
+}
 
 bool Debugger::StartIOHandlerThread() {
   if (!m_io_handler_thread.IsJoinable()) {
@@ -1969,6 +2043,12 @@ void Debugger::JoinIOHandlerThread() {
     m_io_handler_thread.Join(&result);
     m_io_handler_thread = LLDB_INVALID_HOST_THREAD;
   }
+}
+
+bool Debugger::IsIOHandlerThreadCurrentThread() const {
+  if (!HasIOHandlerThread())
+    return false;
+  return m_io_handler_thread.EqualsThread(Host::GetCurrentThread());
 }
 
 Target &Debugger::GetSelectedOrDummyTarget(bool prefer_dummy) {

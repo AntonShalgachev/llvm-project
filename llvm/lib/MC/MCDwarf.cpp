@@ -114,7 +114,7 @@ void MCDwarfLineEntry::make(MCStreamer *MCOS, MCSection *Section) {
 }
 
 //
-// This helper routine returns an expression of End - Start + IntVal .
+// This helper routine returns an expression of End - Start - IntVal .
 //
 static inline const MCExpr *makeEndMinusStartExpr(MCContext &Ctx,
                                                   const MCSymbol &Start,
@@ -308,10 +308,9 @@ MCDwarfLineTableHeader::Emit(MCStreamer *MCOS, MCDwarfLineTableParams Params,
   };
   assert(std::size(StandardOpcodeLengths) >=
          (Params.DWARF2LineOpcodeBase - 1U));
-  return Emit(
-      MCOS, Params,
-      makeArrayRef(StandardOpcodeLengths, Params.DWARF2LineOpcodeBase - 1),
-      LineStr);
+  return Emit(MCOS, Params,
+              ArrayRef(StandardOpcodeLengths, Params.DWARF2LineOpcodeBase - 1),
+              LineStr);
 }
 
 static const MCExpr *forceExpAbs(MCStreamer &OS, const MCExpr* Expr) {
@@ -1860,7 +1859,7 @@ void MCDwarfFrameEmitter::Emit(MCObjectStreamer &Streamer, MCAsmBackend *MAB,
 
   // Emit the compact unwind info if available.
   bool NeedsEHFrameSection = !MOFI->getSupportsCompactUnwindWithoutEHFrame();
-  if (MOFI->getCompactUnwindSection()) {
+  if (IsEH && MOFI->getCompactUnwindSection()) {
     Streamer.generateCompactUnwindEncodings(MAB);
     bool SectionEmitted = false;
     for (const MCDwarfFrameInfo &Frame : FrameArray) {
@@ -1877,7 +1876,11 @@ void MCDwarfFrameEmitter::Emit(MCObjectStreamer &Streamer, MCAsmBackend *MAB,
     }
   }
 
-  if (!NeedsEHFrameSection) return;
+  // Compact unwind information can be emitted in the eh_frame section or the
+  // debug_frame section. Skip emitting FDEs and CIEs when the compact unwind
+  // doesn't need an eh_frame section and the emission location is the eh_frame
+  // section.
+  if (!NeedsEHFrameSection && IsEH) return;
 
   MCSection &Section =
       IsEH ? *const_cast<MCObjectFileInfo *>(MOFI)->getEHFrameSection()
@@ -1904,9 +1907,13 @@ void MCDwarfFrameEmitter::Emit(MCObjectStreamer &Streamer, MCAsmBackend *MAB,
     const MCDwarfFrameInfo &Frame = *I;
     ++I;
     if (CanOmitDwarf && Frame.CompactUnwindEncoding !=
-          MOFI->getCompactUnwindDwarfEHFrameOnly())
-      // Don't generate an EH frame if we don't need one. I.e., it's taken care
-      // of by the compact unwind encoding.
+          MOFI->getCompactUnwindDwarfEHFrameOnly() && IsEH)
+      // CIEs and FDEs can be emitted in either the eh_frame section or the
+      // debug_frame section, on some platforms (e.g. AArch64) the target object
+      // file supports emitting a compact_unwind section without an associated
+      // eh_frame section. If the eh_frame section is not needed, and the
+      // location where the CIEs and FDEs are to be emitted is the eh_frame
+      // section, do not emit anything.
       continue;
 
     CIEKey Key(Frame);

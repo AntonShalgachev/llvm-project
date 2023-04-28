@@ -78,14 +78,14 @@ ClangASTSource::~ClangASTSource() {
   // query the deleted ASTContext for additional type information.
   // We unregister from *all* scratch ASTContexts in case a type got exported
   // to a scratch AST that isn't the best fitting scratch ASTContext.
-  TypeSystemClang *scratch_ast = ScratchTypeSystemClang::GetForTarget(
+  lldb::TypeSystemClangSP scratch_ts_sp = ScratchTypeSystemClang::GetForTarget(
       *m_target, ScratchTypeSystemClang::DefaultAST, false);
 
-  if (!scratch_ast)
+  if (!scratch_ts_sp)
     return;
 
   ScratchTypeSystemClang *default_scratch_ast =
-      llvm::cast<ScratchTypeSystemClang>(scratch_ast);
+      llvm::cast<ScratchTypeSystemClang>(scratch_ts_sp.get());
   // Unregister from the default scratch AST (and all sub-ASTs).
   default_scratch_ast->ForgetSource(m_ast_context, *m_ast_importer_sp);
 }
@@ -700,7 +700,18 @@ void ClangASTSource::FillNamespaceMap(
     if (!symbol_file)
       continue;
 
-    found_namespace_decl = symbol_file->FindNamespace(name, namespace_decl);
+    // If namespace_decl is not valid, 'FindNamespace' would look for
+    // any namespace called 'name' (ignoring parent contexts) and return
+    // the first one it finds. Thus if we're doing a qualified lookup only
+    // consider root namespaces. E.g., in an expression ::A::B::Foo, the
+    // lookup of ::A will result in a qualified lookup. Note, namespace
+    // disambiguation for function calls are handled separately in
+    // SearchFunctionsInSymbolContexts.
+    const bool find_root_namespaces =
+        context.m_decl_context &&
+        context.m_decl_context->shouldUseQualifiedLookup();
+    found_namespace_decl = symbol_file->FindNamespace(
+        name, namespace_decl, /* only root namespaces */ find_root_namespaces);
 
     if (found_namespace_decl) {
       context.m_namespace_map->push_back(

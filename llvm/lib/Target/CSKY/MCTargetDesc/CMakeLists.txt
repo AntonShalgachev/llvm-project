@@ -13,7 +13,8 @@ add_llvm_component_library(LLVMCSKYDesc
   CSKYInfo
   MC
   Support
+  TargetParser
 
   ADD_TO_COMPONENT
   CSKY
-)
+  )

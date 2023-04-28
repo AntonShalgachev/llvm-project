@@ -14,7 +14,6 @@
 
 #include "llvm-c/Core.h"
 #include "llvm-c/Error.h"
-#include "llvm-c/Initialization.h"
 #include "llvm-c/LLJIT.h"
 #include "llvm-c/OrcEE.h"
 #include "llvm-c/Support.h"
@@ -40,7 +39,7 @@ struct Section {
 char CtxCtxPlaceholder;
 char CtxPlaceholder;
 
-const size_t MaxSections = 16;
+#define MaxSections 16
 static size_t SectionCount = 0;
 static struct Section Sections[MaxSections];
 
@@ -201,7 +200,6 @@ int main(int argc, char *argv[]) {
 
   // Parse command line arguments and initialize LLVM Core.
   LLVMParseCommandLineOptions(argc, (const char **)argv, "");
-  LLVMInitializeCore(LLVMGetGlobalPassRegistry());
 
   // Initialize native target codegen and asm printer.
   LLVMInitializeNativeTarget();

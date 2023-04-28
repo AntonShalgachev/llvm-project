@@ -20,7 +20,6 @@
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Lex/Pragma.h"
 #include "llvm/ADT/StringRef.h"
-#include <optional>
 
 namespace clang {
   class Token;
@@ -84,6 +83,16 @@ public:
                            const Token &FilenameTok,
                            SrcMgr::CharacteristicKind FileType) {}
 
+  /// Callback invoked whenever the preprocessor cannot find a file for an
+  /// inclusion directive.
+  ///
+  /// \param FileName The name of the file being included, as written in the
+  /// source code.
+  ///
+  /// \returns true to indicate that the preprocessor should skip this file
+  /// and not issue any diagnostic.
+  virtual bool FileNotFound(StringRef FileName) { return false; }
+
   /// Callback invoked whenever an inclusion directive of
   /// any kind (\c \#include, \c \#import, etc.) has been processed, regardless
   /// of whether the inclusion will actually result in an inclusion.
@@ -128,7 +137,7 @@ public:
   virtual void InclusionDirective(SourceLocation HashLoc,
                                   const Token &IncludeTok, StringRef FileName,
                                   bool IsAngled, CharSourceRange FilenameRange,
-                                  std::optional<FileEntryRef> File,
+                                  OptionalFileEntryRef File,
                                   StringRef SearchPath, StringRef RelativePath,
                                   const Module *Imported,
                                   SrcMgr::CharacteristicKind FileType) {}
@@ -324,7 +333,7 @@ public:
   /// Hook called when a '__has_include' or '__has_include_next' directive is
   /// read.
   virtual void HasInclude(SourceLocation Loc, StringRef FileName, bool IsAngled,
-                          std::optional<FileEntryRef> File,
+                          OptionalFileEntryRef File,
                           SrcMgr::CharacteristicKind FileType);
 
   /// Hook called when a source range is skipped.
@@ -452,12 +461,19 @@ public:
     Second->FileSkipped(SkippedFile, FilenameTok, FileType);
   }
 
+  bool FileNotFound(StringRef FileName) override {
+    bool Skip = First->FileNotFound(FileName);
+    // Make sure to invoke the second callback, no matter if the first already
+    // returned true to skip the file.
+    Skip |= Second->FileNotFound(FileName);
+    return Skip;
+  }
+
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange,
-                          std::optional<FileEntryRef> File,
-                          StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *Imported,
                           SrcMgr::CharacteristicKind FileType) override {
     First->InclusionDirective(HashLoc, IncludeTok, FileName, IsAngled,
                               FilenameRange, File, SearchPath, RelativePath,
@@ -546,7 +562,7 @@ public:
   }
 
   void HasInclude(SourceLocation Loc, StringRef FileName, bool IsAngled,
-                  std::optional<FileEntryRef> File,
+                  OptionalFileEntryRef File,
                   SrcMgr::CharacteristicKind FileType) override;
 
   void PragmaOpenCLExtension(SourceLocation NameLoc, const IdentifierInfo *Name,

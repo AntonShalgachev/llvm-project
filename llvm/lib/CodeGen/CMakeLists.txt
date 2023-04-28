@@ -35,6 +35,7 @@ add_llvm_component_library(LLVMCodeGen
   BasicBlockSections.cpp
   BasicBlockSectionsProfileReader.cpp
   CalcSpillWeights.cpp
+  CallBrPrepare.cpp
   CallingConvLower.cpp
   CFGuardLongjmp.cpp
   CFIFixup.cpp
@@ -98,7 +99,7 @@ add_llvm_component_library(LLVMCodeGen
   LLVMTargetMachine.cpp
   LocalStackSlotAllocation.cpp
   LoopTraversal.cpp
-  LowLevelType.cpp
+  LowLevelTypeUtils.cpp
   LowerEmuTLS.cpp
   MachineBasicBlock.cpp
   MachineBlockFrequencyInfo.cpp
@@ -142,6 +143,7 @@ add_llvm_component_library(LLVMCodeGen
   MachineSSAUpdater.cpp
   MachineStripDebug.cpp
   MachineTraceMetrics.cpp
+  MachineUniformityAnalysis.cpp
   MachineVerifier.cpp
   MIRFSDiscriminator.cpp
   MIRSampleProfile.cpp
@@ -212,6 +214,7 @@ add_llvm_component_library(LLVMCodeGen
   SpillPlacement.cpp
   SplitKit.cpp
   StackColoring.cpp
+  StackFrameLayoutAnalysisPass.cpp
   StackMapLivenessAnalysis.cpp
   StackMaps.cpp
   StackProtector.cpp
@@ -229,8 +232,8 @@ add_llvm_component_library(LLVMCodeGen
   TargetRegisterInfo.cpp
   TargetSchedule.cpp
   TargetSubtargetInfo.cpp
-  TypePromotion.cpp
   TwoAddressInstructionPass.cpp
+  TypePromotion.cpp
   UnreachableBlockElim.cpp
   ValueTypes.cpp
   VLIWMachineScheduler.cpp
@@ -265,6 +268,7 @@ add_llvm_component_library(LLVMCodeGen
   Scalar
   Support
   Target
+  TargetParser
   TransformUtils
   )
 

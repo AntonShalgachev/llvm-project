@@ -41,8 +41,8 @@
 #include "lldb/lldb-private-enumerations.h"
 #include "lldb/lldb-private-interfaces.h"
 #include "lldb/lldb-private-types.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <cstdint>
 #include <cstring>
@@ -1129,7 +1129,7 @@ Disassembler::Disassembler(const ArchSpec &arch, const char *flavor)
       thumb_arch_name.erase(0, 3);
       thumb_arch_name.insert(0, "thumb");
     }
-    m_arch.SetTriple(thumb_arch_name);
+    m_arch.SetTriple(thumb_arch_name.c_str());
   }
 }
 

@@ -191,13 +191,13 @@ void AbstractSparseDataFlowAnalysis::visitBlock(Block *block) {
             dyn_cast<BranchOpInterface>(predecessor->getTerminator())) {
       SuccessorOperands operands =
           branch.getSuccessorOperands(it.getSuccessorIndex());
-      for (auto &it : llvm::enumerate(argLattices)) {
-        if (Value operand = operands[it.index()]) {
-          join(it.value(), *getLatticeElementFor(block, operand));
+      for (auto [idx, lattice] : llvm::enumerate(argLattices)) {
+        if (Value operand = operands[idx]) {
+          join(lattice, *getLatticeElementFor(block, operand));
         } else {
           // Conservatively consider internally produced arguments as entry
           // points.
-          setAllToEntryStates(it.value());
+          setAllToEntryStates(lattice);
         }
       }
     } else {
@@ -318,7 +318,7 @@ LogicalResult
 AbstractSparseBackwardDataFlowAnalysis::visit(ProgramPoint point) {
   if (Operation *op = point.dyn_cast<Operation *>())
     visitOperation(op);
-  else if (Block *block = point.dyn_cast<Block *>())
+  else if (point.dyn_cast<Block *>())
     // For backward dataflow, we don't have to do any work for the blocks
     // themselves. CFG edges between blocks are processed by the BranchOp
     // logic in `visitOperation`, and entry blocks for functions are tied
@@ -385,7 +385,7 @@ void AbstractSparseBackwardDataFlowAnalysis::visitOperation(Operation *op) {
     for (auto [index, block] : llvm::enumerate(op->getSuccessors())) {
       SuccessorOperands successorOperands = branch.getSuccessorOperands(index);
       OperandRange forwarded = successorOperands.getForwardedOperands();
-      if (forwarded.size()) {
+      if (!forwarded.empty()) {
         MutableArrayRef<OpOperand> operands = op->getOpOperands().slice(
             forwarded.getBeginOperandIndex(), forwarded.size());
         for (OpOperand &operand : operands) {
@@ -414,7 +414,7 @@ void AbstractSparseBackwardDataFlowAnalysis::visitOperation(Operation *op) {
     Operation *callableOp = call.resolveCallable(&symbolTable);
     if (auto callable = dyn_cast_or_null<CallableOpInterface>(callableOp)) {
       Region *region = callable.getCallableRegion();
-      if (!region->empty()) {
+      if (region && !region->empty()) {
         Block &block = region->front();
         for (auto [blockArg, operand] :
              llvm::zip(block.getArguments(), operandLattices)) {

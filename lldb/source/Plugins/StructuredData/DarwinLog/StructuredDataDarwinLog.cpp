@@ -557,7 +557,7 @@ public:
   }
 
   llvm::ArrayRef<OptionDefinition> GetDefinitions() override {
-    return llvm::makeArrayRef(g_enable_option_table);
+    return llvm::ArrayRef(g_enable_option_table);
   }
 
   StructuredData::DictionarySP BuildConfigurationData(bool enabled) {
@@ -1365,9 +1365,7 @@ void StructuredDataDarwinLog::DebuggerInitialize(Debugger &debugger) {
     const bool is_global_setting = true;
     PluginManager::CreateSettingForStructuredDataPlugin(
         debugger, GetGlobalProperties().GetValueProperties(),
-        ConstString("Properties for the darwin-log"
-                    " plug-in."),
-        is_global_setting);
+        "Properties for the darwin-log plug-in.", is_global_setting);
   }
 }
 

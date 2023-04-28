@@ -70,6 +70,7 @@
 
 #include <bitset>
 #include <memory>
+#include <optional>
 
 // Unfortunately the signpost header pulls in the system MachO header, too.
 #ifdef CPU_TYPE_ARM
@@ -530,21 +531,18 @@ public:
       lldb::offset_t next_thread_state = offset + (count * 4);
       switch (flavor) {
       case GPRAltRegSet:
-      case GPRRegSet:
-        // On ARM, the CPSR register is also included in the count but it is
-        // not included in gpr.r so loop until (count-1).
-
-        // Prevent static analysis warnings by explicitly contstraining 'count'
-        // to acceptable range. Handle possible underflow of count-1
-        if (count > 0 && count <= sizeof(gpr.r) / sizeof(gpr.r[0])) {
+      case GPRRegSet: {
+        // r0-r15, plus CPSR
+        uint32_t gpr_buf_count = (sizeof(gpr.r) / sizeof(gpr.r[0])) + 1;
+        if (count == gpr_buf_count) {
           for (uint32_t i = 0; i < (count - 1); ++i) {
             gpr.r[i] = data.GetU32(&offset);
           }
-        }
-        // Save cpsr explicitly.
-        gpr.cpsr = data.GetU32(&offset);
+          gpr.cpsr = data.GetU32(&offset);
 
-        SetError(GPRRegSet, Read, 0);
+          SetError(GPRRegSet, Read, 0);
+        }
+      }
         offset = next_thread_state;
         break;
 
@@ -1140,6 +1138,10 @@ bool ObjectFileMachO::IsSharedCacheBinary() const {
   return m_header.flags & MH_DYLIB_IN_CACHE;
 }
 
+bool ObjectFileMachO::IsKext() const {
+  return m_header.filetype == MH_KEXT_BUNDLE;
+}
+
 uint32_t ObjectFileMachO::GetAddressByteSize() const {
   return m_data.GetAddressByteSize();
 }
@@ -1398,9 +1400,8 @@ void ObjectFileMachO::SanitizeSegmentCommand(
     const char *lc_segment_name =
         seg_cmd.cmd == LC_SEGMENT_64 ? "LC_SEGMENT_64" : "LC_SEGMENT";
     GetModule()->ReportWarning(
-        "load command %u %s has a fileoff (0x%" PRIx64
-        ") that extends beyond the end of the file (0x%" PRIx64
-        "), ignoring this section",
+        "load command {0} {1} has a fileoff ({2:x16}) that extends beyond "
+        "the end of the file ({3:x16}), ignoring this section",
         cmd_idx, lc_segment_name, seg_cmd.fileoff, m_length);
 
     seg_cmd.fileoff = 0;
@@ -1417,9 +1418,9 @@ void ObjectFileMachO::SanitizeSegmentCommand(
     const char *lc_segment_name =
         seg_cmd.cmd == LC_SEGMENT_64 ? "LC_SEGMENT_64" : "LC_SEGMENT";
     GetModule()->ReportWarning(
-        "load command %u %s has a fileoff + filesize (0x%" PRIx64
-        ") that extends beyond the end of the file (0x%" PRIx64
-        "), the segment will be truncated to match",
+        "load command {0} {1} has a fileoff + filesize ({2:x16}) that "
+        "extends beyond the end of the file ({4:x16}), the segment will be "
+        "truncated to match",
         cmd_idx, lc_segment_name, seg_cmd.fileoff + seg_cmd.filesize, m_length);
 
     // Truncate the length
@@ -2188,8 +2189,8 @@ UUID ObjectFileMachO::GetSharedCacheUUID(FileSpec dyld_shared_cache,
   version_str[6] = '\0';
   if (strcmp(version_str, "dyld_v") == 0) {
     offset = offsetof(struct lldb_copy_dyld_cache_header_v1, uuid);
-    dsc_uuid = UUID(dsc_header_data.GetData(&offset, sizeof(uuid_t)), 
-                    sizeof(uuid_t));
+    dsc_uuid =
+        UUID(dsc_header_data.GetData(&offset, sizeof(uuid_t)), sizeof(uuid_t));
   }
   Log *log = GetLog(LLDBLog::Symbols);
   if (log && dsc_uuid.IsValid()) {
@@ -2200,7 +2201,7 @@ UUID ObjectFileMachO::GetSharedCacheUUID(FileSpec dyld_shared_cache,
   return dsc_uuid;
 }
 
-static llvm::Optional<struct nlist_64>
+static std::optional<struct nlist_64>
 ParseNList(DataExtractor &nlist_data, lldb::offset_t &nlist_data_offset,
            size_t nlist_byte_size) {
   struct nlist_64 nlist;
@@ -2806,7 +2807,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
                      nlist_index++) {
                   /////////////////////////////
                   {
-                    llvm::Optional<struct nlist_64> nlist_maybe =
+                    std::optional<struct nlist_64> nlist_maybe =
                         ParseNList(dsc_local_symbols_data, nlist_data_offset,
                                    nlist_byte_size);
                     if (!nlist_maybe)
@@ -3026,7 +3027,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
                               // the first contains a directory and the
                               // second contains a full path.
                               sym[sym_idx - 1].GetMangled().SetValue(
-                                  ConstString(symbol_name), false);
+                                  ConstString(symbol_name));
                               m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
                               add_nlist = false;
                             } else {
@@ -3072,7 +3073,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
                                 full_so_path += '/';
                               full_so_path += symbol_name;
                               sym[sym_idx - 1].GetMangled().SetValue(
-                                  ConstString(full_so_path.c_str()), false);
+                                  ConstString(full_so_path.c_str()));
                               add_nlist = false;
                               m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
                             }
@@ -3464,17 +3465,13 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
                         sym[sym_idx].GetMangled().SetDemangledName(
                             ConstString(symbol_name));
                       } else {
-                        bool symbol_name_is_mangled = false;
-
                         if (symbol_name && symbol_name[0] == '_') {
-                          symbol_name_is_mangled = symbol_name[1] == '_';
                           symbol_name++; // Skip the leading underscore
                         }
 
                         if (symbol_name) {
                           ConstString const_symbol_name(symbol_name);
-                          sym[sym_idx].GetMangled().SetValue(
-                              const_symbol_name, symbol_name_is_mangled);
+                          sym[sym_idx].GetMangled().SetValue(const_symbol_name);
                           if (is_gsym && is_debug) {
                             const char *gsym_name =
                                 sym[sym_idx]
@@ -3934,8 +3931,8 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
               if ((N_SO_index == sym_idx - 1) && ((sym_idx - 1) < num_syms)) {
                 // We have two consecutive N_SO entries where the first
                 // contains a directory and the second contains a full path.
-                sym[sym_idx - 1].GetMangled().SetValue(ConstString(symbol_name),
-                                                       false);
+                sym[sym_idx - 1].GetMangled().SetValue(
+                    ConstString(symbol_name));
                 m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
                 add_nlist = false;
               } else {
@@ -3973,7 +3970,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
                   full_so_path += '/';
                 full_so_path += symbol_name;
                 sym[sym_idx - 1].GetMangled().SetValue(
-                    ConstString(full_so_path.c_str()), false);
+                    ConstString(full_so_path.c_str()));
                 add_nlist = false;
                 m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
               }
@@ -4326,17 +4323,14 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
             ConstString(symbol_name_non_abi_mangled));
         sym[sym_idx].GetMangled().SetDemangledName(ConstString(symbol_name));
       } else {
-        bool symbol_name_is_mangled = false;
 
         if (symbol_name && symbol_name[0] == '_') {
-          symbol_name_is_mangled = symbol_name[1] == '_';
           symbol_name++; // Skip the leading underscore
         }
 
         if (symbol_name) {
           ConstString const_symbol_name(symbol_name);
-          sym[sym_idx].GetMangled().SetValue(const_symbol_name,
-                                             symbol_name_is_mangled);
+          sym[sym_idx].GetMangled().SetValue(const_symbol_name);
         }
       }
 
@@ -4552,7 +4546,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
   // Count how many trie symbols we'll add to the symbol table
   int trie_symbol_table_augment_count = 0;
   for (auto &e : external_sym_trie_entries) {
-    if (symbols_added.find(e.entry.address) == symbols_added.end())
+    if (!symbols_added.contains(e.entry.address))
       trie_symbol_table_augment_count++;
   }
 
@@ -4599,8 +4593,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
   if (function_starts_count > 0) {
     uint32_t num_synthetic_function_symbols = 0;
     for (i = 0; i < function_starts_count; ++i) {
-      if (symbols_added.find(function_starts.GetEntryRef(i).addr) ==
-          symbols_added.end())
+      if (!symbols_added.contains(function_starts.GetEntryRef(i).addr))
         ++num_synthetic_function_symbols;
     }
 
@@ -4612,7 +4605,7 @@ void ObjectFileMachO::ParseSymtab(Symtab &symtab) {
       for (i = 0; i < function_starts_count; ++i) {
         const FunctionStarts::Entry *func_start_entry =
             function_starts.GetEntryAtIndex(i);
-        if (symbols_added.find(func_start_entry->addr) == symbols_added.end()) {
+        if (!symbols_added.contains(func_start_entry->addr)) {
           addr_t symbol_file_addr = func_start_entry->addr;
           uint32_t symbol_flags = 0;
           if (func_start_entry->data)
@@ -6094,6 +6087,12 @@ bool ObjectFileMachO::GetIsDynamicLinkEditor() {
   return m_header.filetype == llvm::MachO::MH_DYLINKER;
 }
 
+bool ObjectFileMachO::CanTrustAddressRanges() {
+  // Dsymutil guarantees that the .debug_aranges accelerator is complete and can
+  // be trusted by LLDB.
+  return m_header.filetype == llvm::MachO::MH_DSYM;
+}
+
 bool ObjectFileMachO::AllowAssemblyEmulationUnwindPlans() {
   return m_allow_assembly_emulation_unwind_plans;
 }
@@ -6176,6 +6175,10 @@ bool ObjectFileMachO::SetLoadAddress(Target &target, lldb::addr_t value,
   size_t num_loaded_sections = 0;
   const size_t num_sections = section_list->GetSize();
 
+  // Warn if some top-level segments map to the same address. The binary may be
+  // malformed.
+  const bool warn_multiple = true;
+
   if (value_is_offset) {
     // "value" is an offset to apply to each top level segment
     for (size_t sect_idx = 0; sect_idx < num_sections; ++sect_idx) {
@@ -6184,7 +6187,8 @@ bool ObjectFileMachO::SetLoadAddress(Target &target, lldb::addr_t value,
       SectionSP section_sp(section_list->GetSectionAtIndex(sect_idx));
       if (SectionIsLoadable(section_sp.get()))
         if (target.GetSectionLoadList().SetSectionLoadAddress(
-                section_sp, section_sp->GetFileAddress() + value))
+                section_sp, section_sp->GetFileAddress() + value,
+                warn_multiple))
           ++num_loaded_sections;
     }
   } else {
@@ -6201,7 +6205,7 @@ bool ObjectFileMachO::SetLoadAddress(Target &target, lldb::addr_t value,
                 value, mach_header_section, section_sp.get());
         if (section_load_addr != LLDB_INVALID_ADDRESS) {
           if (target.GetSectionLoadList().SetSectionLoadAddress(
-                  section_sp, section_load_addr))
+                  section_sp, section_load_addr, warn_multiple))
             ++num_loaded_sections;
         }
       }
@@ -6536,7 +6540,7 @@ bool ObjectFileMachO::SaveCore(const lldb::ProcessSP &process_sp,
 
           if (prot != 0 && include_this_region) {
             addr_t pagesize = range_info.GetPageSize();
-            const llvm::Optional<std::vector<addr_t>> &dirty_page_list =
+            const std::optional<std::vector<addr_t>> &dirty_page_list =
                 range_info.GetDirtyPageList();
             if (dirty_pages_only && dirty_page_list) {
               for (addr_t dirtypage : *dirty_page_list) {
@@ -7017,6 +7021,12 @@ bool ObjectFileMachO::LoadCoreFileImages(lldb_private::Process &process) {
           &process, image.filename, image.uuid, image.load_address,
           false /* value_is_offset */, image.currently_executing,
           false /* notify */);
+      if (module_sp) {
+        // We've already set the load address in the Target,
+        // don't do any more processing on this module.
+        added_modules.Append(module_sp, false /* notify */);
+        continue;
+      }
     }
 
     // If we have a slide, we need to find the original binary
@@ -7027,6 +7037,12 @@ bool ObjectFileMachO::LoadCoreFileImages(lldb_private::Process &process) {
           &process, image.filename, image.uuid, image.slide,
           true /* value_is_offset */, image.currently_executing,
           false /* notify */);
+      if (module_sp) {
+        // We've already set the load address in the Target,
+        // don't do any more processing on this module.
+        added_modules.Append(module_sp, false /* notify */);
+        continue;
+      }
     }
 
     // Try to find the binary by UUID or filename on the local
